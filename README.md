@@ -1,47 +1,34 @@
 # RateGate
 
-A thread-safe token-bucket rate limiter for .NET with synchronous `TryAcquire` and asynchronous `WaitAsync`.
-
 ![CI](https://github.com/roekdee/RateGate/actions/workflows/ci.yml/badge.svg)
 
-## Features
+A token-bucket rate limiter for .NET. You can either check synchronously with `TryAcquire` (returns right away, true or false) or wait asynchronously with `WaitAsync` until enough tokens refill. Both take an optional permit count so you can grab several at once.
 
-- **Token-bucket algorithm** — smooth, continuous refill with configurable burst capacity.
-- **Synchronous `TryAcquire`** — non-blocking, returns immediately whether or not tokens were available.
-- **Asynchronous `WaitAsync`** — awaits until enough tokens refill, with full `CancellationToken` support.
-- **FIFO fairness** — queued waiters are served strictly in arrival order; a large request at the head is never starved by smaller requests behind it.
-- **Monotonic clock** — refill is driven by `Stopwatch`, immune to wall-clock adjustments.
-- **Deterministically testable** — an injectable time provider lets unit tests drive a virtual clock with no real delays.
-- **Production-quality** — nullable-enabled, warnings-as-errors, no external dependencies.
+The bucket holds up to `capacity` tokens and refills continuously at `permits / period` per second. An idle limiter lets you burst up to `capacity`, then settles into the steady rate. If you don't pass a capacity it defaults to `permits`.
 
 ## Usage
 
 ```csharp
 using RateGate;
 
-// 100 permits per second, with a burst capacity of 100 tokens.
+// 100 permits/sec, burst capacity 100
 using var limiter = new RateLimiter(permits: 100, period: TimeSpan.FromSeconds(1));
 
-// Synchronous, non-blocking check.
 if (limiter.TryAcquire())
 {
     DoWork();
 }
 else
 {
-    // Over the limit right now — shed load, return 429, etc.
+    // over the limit right now — shed load, return 429, whatever
 }
 
-// Asynchronous wait until a permit is available.
+// wait until a permit frees up
 await limiter.WaitAsync(cancellationToken: token);
 await CallDownstreamServiceAsync();
 
-// Acquire several permits at once (e.g. a batch of work items).
-if (limiter.TryAcquire(permits: 5))
-{
-    ProcessBatch();
-}
-
+// grab several at once
+if (limiter.TryAcquire(permits: 5)) ProcessBatch();
 await limiter.WaitAsync(permits: 5, cancellationToken: token);
 ```
 
@@ -51,35 +38,16 @@ await limiter.WaitAsync(permits: 5, cancellationToken: token);
 dotnet test
 ```
 
-Requires the .NET 8 SDK. The library targets `net8.0`.
+Needs the .NET 8 SDK. The library targets `net8.0`.
 
-## Design notes
+## How it works
 
-**Token bucket.** The limiter holds up to `capacity` tokens and refills continuously
-at `permits / period` tokens per second. A request for *n* permits succeeds when at
-least *n* tokens are available; otherwise it either fails fast (`TryAcquire`) or queues
-(`WaitAsync`). Because the bucket can hold up to `capacity` tokens, an idle limiter
-permits a burst up to that size before settling into the steady-state rate. When
-`capacity` is omitted it defaults to `permits`.
+All the state lives behind one lock. There's no background refill thread — available tokens are recomputed from elapsed time on each call, which keeps it simple and means an idle limiter costs nothing. Waiters sit in a FIFO queue of `TaskCompletionSource`-backed entries; the head reserves its slot first, so a large request at the front won't get starved by smaller ones behind it. Continuations run asynchronously so they don't fire under the lock, and a per-waiter timer wakes the queue when the next grant is due.
 
-**Concurrency.** All state transitions happen under a single lock. Available tokens are
-recomputed lazily from elapsed time on each operation, so there is no background refill
-thread. Pending `WaitAsync` callers are tracked in a FIFO queue of
-`TaskCompletionSource`-backed waiters; the head waiter reserves its slot first, which
-guarantees ordering and prevents starvation. Continuations run asynchronously
-(`RunContinuationsAsynchronously`) so they never execute under the lock. A per-waiter
-timer wakes the queue exactly when the next grant becomes possible.
+Timing goes through an `ITimeProvider`. Production uses a `Stopwatch`-based monotonic clock (so wall-clock changes don't mess with refill). Tests inject a virtual clock that only moves when you call `Advance(...)`, which is what lets the ordering and refill tests be deterministic instead of leaning on `Task.Delay`.
 
-**Virtual clock for tests.** Timing is abstracted behind `ITimeProvider`. Production uses
-`MonotonicTimeProvider` (a shared `Stopwatch`). Tests inject `VirtualTimeProvider`, whose
-clock only advances when `Advance(...)` is called. This makes every refill and ordering
-assertion deterministic — the test suite never relies on real `Thread.Sleep`/`Task.Delay`
-for timing correctness.
+## Notes
 
-## Tech
+The virtual-clock abstraction is the part I'm happiest about — without it, the concurrency and ordering tests would be flaky and slow, and with it they're exact. That was worth the small bit of indirection.
 
-- .NET 8 (`net8.0`), C# with nullable reference types enabled
-- `System.Diagnostics.Stopwatch` for the monotonic clock
-- `TaskCompletionSource` + `System.Threading.Timer` for async waiting
-- xUnit for unit, concurrency, and cancellation tests
-- GitHub Actions CI (Ubuntu, `dotnet test`)
+It's a single in-process limiter; there's no distributed/shared-state mode, so each process has its own bucket. If I needed cross-instance limiting I'd back it with Redis or similar. A `TryAcquire` overload that reports the wait time until the next token would also be a nice addition.
