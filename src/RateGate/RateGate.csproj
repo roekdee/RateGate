@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <RootNamespace>RateGate</RootNamespace>
+    <AssemblyName>RateGate</AssemblyName>
+    <PackageId>RateGate</PackageId>
+    <Description>Thread-safe token-bucket rate limiter for .NET with synchronous TryAcquire and asynchronous WaitAsync.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RateGate.Tests" />
+  </ItemGroup>
+
+</Project>
