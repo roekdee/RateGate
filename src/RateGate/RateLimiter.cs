@@ -86,6 +86,24 @@ public sealed class RateLimiter : IDisposable
     }
 
     /// <summary>
+    /// Number of whole permits that could be granted right now, after accounting for
+    /// elapsed-time refill. This is <see cref="AvailableTokens"/> floored to an integer,
+    /// i.e. the largest <c>n</c> for which <see cref="TryAcquire(int)"/> would currently
+    /// succeed. A partially-refilled token does not count toward this value.
+    /// </summary>
+    public int AvailablePermits
+    {
+        get
+        {
+            lock (_gate)
+            {
+                Refill();
+                return (int)_tokens;
+            }
+        }
+    }
+
+    /// <summary>
     /// Attempts to consume <paramref name="permits"/> tokens immediately without waiting.
     /// </summary>
     /// <param name="permits">Number of tokens to consume. Must be positive.</param>

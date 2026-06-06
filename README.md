@@ -30,7 +30,16 @@ await CallDownstreamServiceAsync();
 // grab several at once
 if (limiter.TryAcquire(permits: 5)) ProcessBatch();
 await limiter.WaitAsync(permits: 5, cancellationToken: token);
+
+// peek at how many whole permits are free right now (after a lazy refill)
+int free = limiter.AvailablePermits;
+Console.WriteLine($"{free} requests allowed before throttling");
 ```
+
+`TryAcquire` is fully non-blocking: it takes the permits and returns `true`, or returns
+`false` immediately without waiting or queuing. `AvailablePermits` is the whole-number
+count of permits that could be granted at that instant — it's `AvailableTokens` floored,
+so a partially-refilled token doesn't count until it's whole.
 
 ## Build & test
 

@@ -338,6 +338,84 @@ public sealed class RateLimiterTests
     }
 
     [Fact]
+    public void AvailablePermits_ReflectsConsumption()
+    {
+        var clock = new VirtualTimeProvider();
+        using var limiter = new RateLimiter(permits: 10, OneSecond, capacity: 10, clock);
+
+        // Bucket starts full.
+        Assert.Equal(10, limiter.AvailablePermits);
+
+        Assert.True(limiter.TryAcquire(3));
+        Assert.Equal(7, limiter.AvailablePermits);
+
+        Assert.True(limiter.TryAcquire(7));
+        Assert.Equal(0, limiter.AvailablePermits);
+
+        // Exhausted: no whole permits left, and TryAcquire agrees.
+        Assert.False(limiter.TryAcquire(1));
+        Assert.Equal(0, limiter.AvailablePermits);
+    }
+
+    [Fact]
+    public void AvailablePermits_IncreasesAfterRefill()
+    {
+        var clock = new VirtualTimeProvider();
+        using var limiter = new RateLimiter(permits: 10, OneSecond, capacity: 10, clock);
+
+        Assert.True(limiter.TryAcquire(10));
+        Assert.Equal(0, limiter.AvailablePermits);
+
+        // 400ms at 10/s => 4 tokens refilled.
+        clock.Advance(TimeSpan.FromMilliseconds(400));
+        Assert.Equal(4, limiter.AvailablePermits);
+
+        // Refill is capped at capacity.
+        clock.Advance(TimeSpan.FromSeconds(100));
+        Assert.Equal(10, limiter.AvailablePermits);
+    }
+
+    [Fact]
+    public void AvailablePermits_FloorsPartialToken()
+    {
+        var clock = new VirtualTimeProvider();
+        using var limiter = new RateLimiter(permits: 10, OneSecond, capacity: 10, clock);
+
+        Assert.True(limiter.TryAcquire(10));
+
+        // 250ms at 10/s => 2.5 tokens. AvailablePermits floors to 2; the fractional
+        // half-token is not yet a usable permit.
+        clock.Advance(TimeSpan.FromMilliseconds(250));
+        Assert.Equal(2, limiter.AvailablePermits);
+        Assert.Equal(2.5, limiter.AvailableTokens, precision: 6);
+
+        // Only the whole permits can actually be acquired.
+        Assert.True(limiter.TryAcquire(2));
+        Assert.False(limiter.TryAcquire(1));
+    }
+
+    [Fact]
+    public void TryAcquire_NeverBlocks_WhenExhausted()
+    {
+        var clock = new VirtualTimeProvider();
+        using var limiter = new RateLimiter(permits: 1, OneSecond, capacity: 1, clock);
+
+        Assert.True(limiter.TryAcquire(1)); // empty the bucket
+
+        // With no tokens and no time advanced, TryAcquire must return immediately
+        // rather than wait or queue. Guard with a generous wall-clock budget so a
+        // hang would surface as a failure instead of blocking the suite.
+        var sw = Stopwatch.StartNew();
+        bool acquired = limiter.TryAcquire(1);
+        sw.Stop();
+
+        Assert.False(acquired);
+        Assert.True(
+            sw.Elapsed < TimeSpan.FromSeconds(1),
+            $"TryAcquire blocked for {sw.Elapsed}; it must return without waiting.");
+    }
+
+    [Fact]
     public async Task WaitAsync_RealClock_EnforcesThroughput()
     {
         // Sanity check against the real monotonic clock (not a timing assertion on
